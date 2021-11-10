@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- Default screen margins, per the Android Design guidelines. -->
+
+    <!-- 低价日历相关大小 -->
+
+    <!-- 选项文字大小 -->
+    <dimen name="pickerview_textsize">20dp</dimen>
+    <dimen name="pickerview_textsize2">16dp</dimen>
+
+
+</resources>

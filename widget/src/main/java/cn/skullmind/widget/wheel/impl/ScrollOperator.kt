@@ -11,7 +11,7 @@ class ScrollOperator(private val listener: ScrollOperatorListener) {
     // Timer mTimer;
     private val mExecutor = Executors.newSingleThreadScheduledExecutor()
     private var mFuture: ScheduledFuture<*>? = null
-    fun smoothScroll(action: WheelView.ACTION?, taskListener: SmoothScrollTimerTask.Listener) {
+    fun smoothScroll(action: WheelView.ACTION, taskListener: SmoothScrollTimerTask.Listener) {
         cancelFuture()
         val offset = listener.getOffSet(action)
         mFuture = mExecutor.scheduleWithFixedDelay(
@@ -39,7 +39,7 @@ class ScrollOperator(private val listener: ScrollOperatorListener) {
     }
 
     interface ScrollOperatorListener {
-        fun getOffSet(action: WheelView.ACTION?): Int
+        fun getOffSet(action: WheelView.ACTION): Int
         fun scrollBy(velocityY: Float)
     }
 

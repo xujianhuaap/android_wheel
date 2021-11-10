@@ -362,7 +362,7 @@ class DrawOperator(wheelOptions: WheelOptions) {
     }
 
     interface DrawOperatorListener {
-        fun lastDrawContent(drawContent: Any?, workingAdapter: WheelAdapter<*>?)
+        fun lastDrawContent(drawContent: Any?, workingAdapter: WheelAdapter<*>)
     }
 
     companion object {

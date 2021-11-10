@@ -8,7 +8,9 @@ import android.graphics.Typeface
 import android.util.AttributeSet
 import android.util.DisplayMetrics
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
+import cn.skullmind.widget.R
 import cn.skullmind.widget.wheel.impl.*
 
 
@@ -17,17 +19,117 @@ import cn.skullmind.widget.wheel.impl.*
  */
 class WheelView @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) :
     View(context, attrs) {
-    lateinit var handler: MessageHandler?
+    private val handler: MessageHandler
     var mStatus = STATUS.IDLE
     lateinit var onItemSelectedListener: OnItemSelectedListener
     private val drawOperatorListener: DrawOperator.DrawOperatorListener
-    private val wheelOptions: WheelOptions
-    private val scrollOperator: ScrollOperator
+    private lateinit var wheelOptions: WheelOptions
+    private lateinit var scrollOperator: ScrollOperator
     private val touchOperator: TouchOperator
-    private var drawOperator: DrawOperator? = null
+    private lateinit var drawOperator: DrawOperator
+
+    init {
+        handler = MessageHandler(this)
+
+        val dm: DisplayMetrics = resources.displayMetrics
+        val density: Float = dm.density // 屏幕密度（0.75/1.0/1.5/2.0/3.0）
+        var measuredHeight = 0
+        var dividerColor = 0
+        var textColorCenter = 0
+        var textColorOut = 0
+        var textSize = resources.getDimensionPixelSize(R.dimen.pickerview_textsize) //默认大小
+        val textSizeLabel = resources.getDimensionPixelSize(R.dimen.pickerview_textsize2) //默认大小
+        var initGravity: Int = Gravity.CENTER
+        // 条目间距倍数
+        var lineSpacingMultiplier = 1.83f
+        if (attrs != null) {
+            @SuppressLint("CustomViewStyleable") val a: TypedArray =
+                context.obtainStyledAttributes(attrs, R.styleable.pickerview, 0, 0)
+            initGravity = a.getInt(R.styleable.pickerview_pickerview_gravity, Gravity.CENTER)
+            textColorOut = a.getColor(R.styleable.pickerview_pickerview_textColorOut, textColorOut)
+            textColorCenter =
+                a.getColor(R.styleable.pickerview_pickerview_textColorCenter, textColorCenter)
+            dividerColor = a.getColor(R.styleable.pickerview_pickerview_dividerColor, dividerColor)
+            textSize =
+                a.getDimensionPixelOffset(R.styleable.pickerview_pickerview_textSize, textSize)
+            lineSpacingMultiplier = a.getFloat(
+                R.styleable.pickerview_pickerview_lineSpacingMultiplier,
+                lineSpacingMultiplier
+            )
+            measuredHeight =
+                a.getDimensionPixelSize(R.styleable.pickerview_pickerview_view_measuredHeight, 0)
+            a.recycle() //回收内存
+        }
+        val wheelViewMeasure = WheelViewMeasure(measuredHeight)
+        val initOptions = InitOptions(lineSpacingMultiplier, density)
+        initOptions.gravity = initGravity
+        val builder: PaintOptionsBuilder = PaintOptionsBuilder()
+            .setTextColorCenter(textColorCenter)
+            .setTextColorOut(textColorOut)
+            .setDividerColor(dividerColor)
+            .setTextSize(textSize)
+            .setTextSizeLabel(textSizeLabel)
+        val paintOptions: PaintOptions = builder.createContentPaint()
+        touchOperator = TouchOperator(getContext(), LoopViewGestureListener(this))
+        touchOperator.totalScrollY = 0f
+        val selectListener: SelectItemState.SelectListener = object:SelectItemState.SelectListener{
+            override fun startExecutePending() {
+                mStatus = STATUS.WORKING
+            }
+
+            override fun endExecutePending() {
+                sendMessage(MessageHandler.WHAT_ITEM_SELECTED)
+            }
+
+            override fun updatedWorkingAdapter() {
+                if (mStatus != STATUS.IDLE) {
+                    scrollOperator.cancelFuture()
+                    handler.cleanMessages()
+                }
+                wheelOptions.reset()
+                touchOperator.reset()
+                postDelayed({
+                    wheelOptions.remeasure(height)
+                    invalidate()
+                }, 50)
+            }
+        }
+        scrollOperator = ScrollOperator(object : ScrollOperator.ScrollOperatorListener {
+            override fun getOffSet(action: ACTION): Int {
+                touchOperator.refreshOffSet(
+                    action, wheelOptions.paintOptions,
+                    wheelOptions.wheelContentMeasure
+                )
+                return touchOperator.offset
+            }
+
+            override fun scrollBy(velocityY: Float) {
+                //滚动惯性的实现
+                mStatus = STATUS.WORKING
+            }
+        })
+        wheelOptions = WheelOptions(
+            paintOptions,
+            initOptions,
+            wheelViewMeasure,
+            selectListener
+        )
+        wheelOptions.setLoop(true)
+        wheelOptions.setInitPosition(-1)
+        setLayerType(LAYER_TYPE_SOFTWARE, null)
+        drawOperatorListener = object :DrawOperator.DrawOperatorListener{
+            override fun lastDrawContent(drawContent: Any?, workingAdapter: WheelAdapter<*>) {
+                val selectedItem = workingAdapter.indexOf(drawContent)
+                wheelOptions.setSelectedItem(selectedItem)
+                wheelOptions.setValidSelectedItem(selectedItem)
+                wheelOptions.setValidAdapter(workingAdapter)
+            }
+        }
+    }
+
     fun smoothScroll() {
-        scrollOperator.smoothScroll(ACTION.FLING, object : InertiaTimerTask.Listener() {
-            fun endScroll() {
+        scrollOperator.smoothScroll(ACTION.FLING, object : SmoothScrollTimerTask.Listener {
+            override fun endScroll() {
                 scrollOperator.cancelFuture()
                 //非循环纠正
                 if (totalScrollY < 0) {
@@ -36,11 +138,11 @@ class WheelView @JvmOverloads constructor(context: Context, attrs: AttributeSet?
                 sendMessage(MessageHandler.WHAT_ITEM_SELECTED)
             }
 
-            fun scrolling(realTotalOffset: Int, realOffset: Int): Boolean {
+            override fun scrolling(realTotalOffset: Int, realOffset: Int): Boolean {
                 totalScrollY = totalScrollY + realOffset
                 // 边界处理。
                 //这里如果不是循环模式，则点击空白位置需要回滚，不然就会出现选到－1 item的 情况
-                if (!wheelOptions.initOptions.isLoop()) {
+                if (!wheelOptions.initOptions.isLoop) {
                     val itemHeight: Float = wheelOptions.itemHeight
                     val top =
                         -wheelOptions.scrollStatus.initPosition as Float * itemHeight
@@ -56,21 +158,22 @@ class WheelView @JvmOverloads constructor(context: Context, attrs: AttributeSet?
                 sendMessage(MessageHandler.WHAT_INVALIDATE_LOOP_VIEW)
                 return false
             }
+
         })
     }
 
     fun scrollBy(velocityY: Float) {
         scrollOperator.scrollBy(velocityY, object : InertiaTimerTask.Listener {
-            fun executeSmoothScroll() {
+            override fun executeSmoothScroll() {
                 scrollOperator.cancelFuture()
                 sendMessage(MessageHandler.WHAT_SMOOTH_SCROLL)
             }
 
-            fun refreshViewAfterLongScroll() {
+            override fun refreshViewAfterLongScroll() {
                 sendMessage(MessageHandler.WHAT_INVALIDATE_LOOP_VIEW)
             }
 
-            fun refreshTotalScrollY(i: Int, initPendingScrollValue: Float): Float {
+            override fun refreshTotalScrollY(i: Int, initPendingScrollValue: Float): Float {
                 var initPendingScrollValue = initPendingScrollValue
                 totalScrollY = totalScrollY - i
                 if (!wheelOptions.initOptions.isLoop) {
@@ -119,6 +222,7 @@ class WheelView @JvmOverloads constructor(context: Context, attrs: AttributeSet?
         wheelOptions.setTextSize(this.context, size)
     }
 
+    @JvmName("setOnItemSelectedListener1")
     fun setOnItemSelectedListener(OnItemSelectedListener: OnItemSelectedListener) {
         onItemSelectedListener = OnItemSelectedListener
     }
@@ -127,7 +231,7 @@ class WheelView @JvmOverloads constructor(context: Context, attrs: AttributeSet?
     val selectItemContent: Any?
         get() = wheelOptions.selectItemContent
 
-    fun <T> setPendingAdapter(adapter: WheelAdapter<T>?) {
+    fun <T> setPendingAdapter(adapter: WheelAdapter<T>) {
         wheelOptions.setPendingAdapter(adapter, mStatus)
     }
 
@@ -158,7 +262,7 @@ class WheelView @JvmOverloads constructor(context: Context, attrs: AttributeSet?
 
     override fun onDraw(canvas: Canvas) {
         wheelOptions.remeasureIfNeed(height)
-        val workingAdapter: WheelAdapter<Any> = wheelOptions.getWheelAdapter() ?: return
+        val workingAdapter: WheelAdapter<Any> = wheelOptions.wheelAdapter ?: return
         if (drawOperator == null) {
             drawOperator = DrawOperator(wheelOptions)
         }
@@ -172,9 +276,9 @@ class WheelView @JvmOverloads constructor(context: Context, attrs: AttributeSet?
     }
 
     private var totalScrollY: Float
-        private get() = touchOperator.getTotalScrollY()
+        private get() = touchOperator.totalScrollY
         set(totalScrollY) {
-            touchOperator.setTotalScrollY(totalScrollY)
+            touchOperator.totalScrollY = totalScrollY
         }
 
     fun setStartCenter(startCenter: Boolean) {
@@ -183,10 +287,10 @@ class WheelView @JvmOverloads constructor(context: Context, attrs: AttributeSet?
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         wheelOptions.remeasureWhenChange(widthMeasureSpec, height)
-        val wheelViewMeasure: WheelViewMeasure = wheelOptions.getWheelViewMeasure()
+        val wheelViewMeasure: WheelViewMeasure = wheelOptions.wheelViewMeasure
         setMeasuredDimension(
-            wheelViewMeasure.getMeasureWidth(),
-            wheelViewMeasure.getMeasuredHeight()
+            wheelViewMeasure.measureWidth,
+            wheelViewMeasure.measuredHeight
         )
     }
 
@@ -238,7 +342,7 @@ class WheelView @JvmOverloads constructor(context: Context, attrs: AttributeSet?
         wheelOptions.setDividerColor(dividerColor)
     }
 
-    fun setDividerType(dividerType: DividerType?) {
+    fun setDividerType(dividerType: DividerType) {
         wheelOptions.setDividerType(dividerType)
     }
 
@@ -265,100 +369,5 @@ class WheelView @JvmOverloads constructor(context: Context, attrs: AttributeSet?
         IDLE, WORKING
     }
 
-    init {
-        val dm: DisplayMetrics = resources.displayMetrics
-        val density: Float = dm.density // 屏幕密度（0.75/1.0/1.5/2.0/3.0）
-        var measuredHeight = 0
-        var dividerColor = 0
-        var textColorCenter = 0
-        var textColorOut = 0
-        var textSize = resources.getDimensionPixelSize(R.dimen.pickerview_textsize) //默认大小
-        val textSizeLabel = resources.getDimensionPixelSize(R.dimen.pickerview_textsize2) //默认大小
-        var initGravity: Int = Gravity.CENTER
-        // 条目间距倍数
-        var lineSpacingMultiplier = 1.83f
-        if (attrs != null) {
-            @SuppressLint("CustomViewStyleable") val a: TypedArray =
-                context.obtainStyledAttributes(attrs, R.styleable.pickerview, 0, 0)
-            initGravity = a.getInt(R.styleable.pickerview_pickerview_gravity, Gravity.CENTER)
-            textColorOut = a.getColor(R.styleable.pickerview_pickerview_textColorOut, textColorOut)
-            textColorCenter =
-                a.getColor(R.styleable.pickerview_pickerview_textColorCenter, textColorCenter)
-            dividerColor = a.getColor(R.styleable.pickerview_pickerview_dividerColor, dividerColor)
-            textSize =
-                a.getDimensionPixelOffset(R.styleable.pickerview_pickerview_textSize, textSize)
-            lineSpacingMultiplier = a.getFloat(
-                R.styleable.pickerview_pickerview_lineSpacingMultiplier,
-                lineSpacingMultiplier
-            )
-            measuredHeight =
-                a.getDimensionPixelSize(R.styleable.pickerview_pickerview_view_measuredHeight, 0)
-            a.recycle() //回收内存
-        }
-        val wheelViewMeasure = WheelViewMeasure(measuredHeight)
-        val initOptions = InitOptions(lineSpacingMultiplier, density)
-        initOptions.setGravity(initGravity)
-        val builder: PaintOptionsBuilder = PaintOptionsBuilder()
-            .setTextColorCenter(textColorCenter)
-            .setTextColorOut(textColorOut)
-            .setDividerColor(dividerColor)
-            .setTextSize(textSize)
-            .setTextSizeLabel(textSizeLabel)
-        val paintOptions: PaintOptions = builder.createContentPaint()
-        touchOperator = TouchOperator(getContext(), LoopViewGestureListener(this))
-        touchOperator.setTotalScrollY(0)
-        val selectListener: SelectItemState.SelectListener = object : SelectItemState.SelectListener() {
-            fun startExecutePending() {
-                mStatus = STATUS.WORKING
-            }
 
-            fun endExecutePending() {
-                sendMessage(MessageHandler.WHAT_ITEM_SELECTED)
-            }
-
-            fun updatedWorkingAdapter() {
-                if (mStatus != STATUS.IDLE) {
-                    scrollOperator.cancelFuture()
-                    handler.cleanMessages()
-                }
-                wheelOptions.reset()
-                touchOperator.reset()
-                postDelayed({
-                    wheelOptions.remeasure(height)
-                    invalidate()
-                }, 50)
-            }
-        }
-        scrollOperator = ScrollOperator(object : ScrollOperator.ScrollOperatorListener {
-            fun getOffSet(action: ACTION?): Int {
-                touchOperator.refreshOffSet(
-                    action, wheelOptions.paintOptions,
-                    wheelOptions.wheelContentMeasure
-                )
-                return touchOperator.offset)
-            }
-
-            fun scrollBy(velocityY: Float) {
-                //滚动惯性的实现
-                mStatus = STATUS.WORKING
-            }
-        })
-        wheelOptions = WheelOptions(
-            paintOptions,
-            initOptions,
-            wheelViewMeasure,
-            selectListener
-        )
-        wheelOptions.setLoop(true)
-        wheelOptions.setInitPosition(-1)
-        setLayerType(LAYER_TYPE_SOFTWARE, null)
-        drawOperatorListener =
-            DrawOperator.DrawOperatorListener { drawContent: Any?, workingAdapter: WheelAdapter<*> ->
-                val selectedItem = workingAdapter.indexOf(drawContent)
-                wheelOptions.setSelectedItem(selectedItem)
-                wheelOptions.setValidSelectedItem(selectedItem)
-                wheelOptions.setValidAdapter(workingAdapter)
-            }
-        handler = MessageHandler(this)
-    }
 }
